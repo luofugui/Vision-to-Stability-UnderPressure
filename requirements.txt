@@ -1,0 +1,15 @@
+tensorboard
+h5py
+numpy
+tqdm
+matplotlib
+pyyaml
+timm
+einops
+Pillow
+opencv-python
+moviepy
+scipy
+scikit-image
+seaborn
+psutil

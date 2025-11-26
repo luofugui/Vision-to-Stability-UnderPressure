@@ -1,0 +1,130 @@
+data:
+  active_only: true
+  chunk_data: true
+  chunk_size: 5000
+  contact_threshold: 0.003
+  data_type: BODY25_3D
+  num_regions:
+  - 2
+  - 1
+  pressure_is_distribution: true
+  sequence_length: 9
+  shuffle_data: true
+  subject_wise_max_norm: false
+  subject_wise_weight_norm: false
+  use_regions: true
+  view: 1
+  binary_contact: False #True/False (use sigmoid)
+  gt_com: True
+
+default:
+  checkpoint_path: checkpoints
+  data_path: Chunked_PSU/BODY25_3D_5fps_distribution
+  loso: True
+  device: cuda
+  log_interval: 50
+  log_path: log
+  mode: ['com', 'contact', 'pressure'] 
+  om: false
+  results_path: Results
+  seed: 0
+  subjects: all
+  test: false
+  train: True
+  eval: true
+
+eval:
+  bad_frames_in_seq_thresh: 0
+  checkpoint_flag: best
+  eval_results_path: stats
+  save_output: True
+  zero_conf_thresh: 0
+  load_extra_joints: false
+
+loss:
+  pressure_loss: kld
+
+  com_reduction: mean
+  contact_reduction: mean
+  pressure_reduction: sum 
+  final_reduction: 
+
+  lambda_com: 1
+  lambda_contact: 1
+  lambda_pressure: 1
+
+network:
+  contact_conditioned: true
+  decoder_dim: 128
+  dropout: 0.2
+  mlp_dim: 1024
+  model: footformer
+  norm_first: false
+  num_heads: 8
+  num_layers: 4
+  pool: weighted
+  pos: learnable
+  pose_embed_dim: 512
+  pose_embedder: gcn
+  transformer: multi 
+
+training:
+  batch_size: 256
+  dataloader_workers: 4
+  decay: 0.01
+  early_stop_patience: 6
+  epochs: 100
+  lr: 0.0002
+  max_grad_norm: 0.5
+  normalize: null
+  optimizer: adamw
+  per_sub_epochs: null
+  scheduler: cosine_warmup
+  smoothing_window: 6
+  train_val_split: 0.9
+  val_every: 2
+  warmup_steps: 1000
+
+viz:
+  # General settings
+  enabled: False
+  fps: 10
+  dpi: 300
+  save_format: 'png'
+  colormap: 'jet'
+  plt_style: 'default'
+  
+  # Figure settings
+  figures:
+    pressure:
+      figsize: [10, 8]
+      view_angle: [34, -145]
+    contact:
+      figsize: [2, 6]
+      show_colorbar: true
+      show_both_feet: true
+      mirror: True
+    com:
+      figsize: [6, 6]
+      view_angle_3d: [30, 45]
+  
+  # Collage settings
+  collage:
+    enabled: false
+    samples_per_viz: 8
+    stack_vertical: true
+    
+  # Video settings
+  video:
+    dpi: 100
+    downsample: 1
+    enabled: false
+    modalities: ['pressure', 'contact', 'com']
+    preset: 'medium'
+    crf: 23
+    video_processors: 1
+    
+  # Visualization during different phases
+  validation:
+    enabled: False
+    samples_per_epoch: 8
