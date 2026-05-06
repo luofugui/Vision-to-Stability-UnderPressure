@@ -35,8 +35,10 @@ def eval_model(model, test_loader, result_save_dir, data_id, experiment_manager,
     model = model.to(device)
     model.eval()
  
-    normalizer = DataNormalizer(cfg.default.data_path, cfg=cfg)
-    normalizer.verify_consistency(cfg)
+    is_underpressure = getattr(cfg.data, 'dataset', 'psu').lower() == 'underpressure'
+    normalizer = None if is_underpressure else DataNormalizer(cfg.default.data_path, cfg=cfg)
+    if normalizer is not None:
+        normalizer.verify_consistency(cfg)
 
     outputs = defaultdict(list)
     targets = defaultdict(list)
@@ -71,7 +73,7 @@ def eval_model(model, test_loader, result_save_dir, data_id, experiment_manager,
             non_center_frames = torch.cat([frame_valid[:, :center_idx], frame_valid[:, center_idx+1:]], dim=1)
             bad_frame_count = torch.sum(~non_center_frames, dim=1)
             other_frames_valid = bad_frame_count <= cfg.eval.bad_frames_in_seq_thresh
-            if 'pressure' in batch:
+            if 'pressure' in batch and not is_underpressure:
                 zero_pressure_mask = create_zero_pressure_mask(batch['pressure'], cfg.data.active_only)
                 pressure_valid = ~zero_pressure_mask
             else:
@@ -131,13 +133,13 @@ def eval_model(model, test_loader, result_save_dir, data_id, experiment_manager,
     logger.info(f"\nTotal valid frames: {total_valid_frames}\n")
     
     # Denormalize data before saving or calculating metrics
-    if 'com' in outputs:
+    if 'com' in outputs and normalizer is not None:
         outputs['com'] = normalizer.denormalize_com(outputs['com'], data_id=data_id)
         targets['com'] = normalizer.denormalize_com(targets['com'], data_id=data_id)
         outputs['middle_frame_joints'] = normalizer.denormalize_joints(outputs['middle_frame_joints'], data_id=data_id) 
 
     # Denormalize pressure data if present
-    if 'pressure' in outputs:
+    if 'pressure' in outputs and normalizer is not None:
         outputs['pressure'] = normalizer.unnormalize_and_scale_to_kpa(
             outputs['pressure'], data_id, cfg, reconstruct_full=reconstruct_full
         )
@@ -146,7 +148,7 @@ def eval_model(model, test_loader, result_save_dir, data_id, experiment_manager,
         )
         
     # Denormalize contact data if present
-    if 'contact' in outputs:
+    if 'contact' in outputs and normalizer is not None:
         outputs['contact'] = normalizer.unnormalize_contact(
             outputs['contact'], data_id, cfg, reconstruct_full=False, apply_sigmoid=~cfg.data.binary_contact
         )
@@ -202,7 +204,7 @@ def eval_model(model, test_loader, result_save_dir, data_id, experiment_manager,
         if key == 'middle_frame_joints':
             continue
         metrics[key] = {}
-        if key == 'pressure':
+        if key == 'pressure' and normalizer is not None:
             # Data is already in kPa
             pred_kpa = outputs['pressure']
             gt_kpa = targets['pressure']
@@ -212,6 +214,14 @@ def eval_model(model, test_loader, result_save_dir, data_id, experiment_manager,
             metrics['pressure'] = calc_stats(gt_kpa, pred_kpa, foot_mask, data_id, sub_weight, 
                                         frame_mask=frame_mask, writer=writer, 
                                         global_step=global_step, active_only=cfg.data.active_only)
+        elif key == 'pressure':
+            pred = outputs['pressure']
+            gt = targets['pressure']
+            valid = frame_mask.reshape(-1, *([1] * (pred.ndim - 1)))
+            err = (pred - gt) * valid
+            metrics['pressure']['mse'] = np.nanmean(err ** 2).item()
+            metrics['pressure']['mae'] = np.nanmean(np.abs(err)).item()
+            metrics['pressure']['rmse'] = np.sqrt(metrics['pressure']['mse']).item()
         elif key == 'com':
             metrics['com']['l2_error_mean'] = l2_error(outputs['com'], targets['com'], frame_mask, gt_com=cfg.data.gt_com)
             metrics['com']['l2_error_median'] = l2_error(outputs['com'], targets['com'], frame_mask, gt_com=cfg.data.gt_com, metric='median')

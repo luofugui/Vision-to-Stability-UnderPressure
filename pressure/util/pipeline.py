@@ -247,7 +247,8 @@ class Pipeline:
         self.model.eval()
         batch_losses = defaultdict(lambda: {'values': [], 'steps': []})
         network_dtype = next(self.model.parameters()).dtype
-        normalizer = DataNormalizer(self.cfg.default.data_path, cfg=self.cfg)
+        is_underpressure = getattr(self.cfg.data, 'dataset', 'psu').lower() == 'underpressure'
+        normalizer = None if is_underpressure else DataNormalizer(self.cfg.default.data_path, cfg=self.cfg)
         
         outputs = defaultdict(list)
         targets = defaultdict(list)
@@ -269,7 +270,7 @@ class Pipeline:
                 
                 # Collect outputs and targets for each modality
                 for key in output:
-                    if key == 'com':
+                    if key == 'com' and normalizer is not None:
                         pred_com = output[key].cpu().numpy()
                         target_com = batch[key].cpu().numpy()
                         pred_com_denorm = normalizer.denormalize_com(pred_com, subject)

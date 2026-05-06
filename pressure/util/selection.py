@@ -5,7 +5,7 @@ import numpy as np
 import torch
 from torchvision.transforms import ToTensor
 
-from pressure.data.dataset import PSUTMM100_Temporal_LOSO_Chunked
+from pressure.data.dataset import PSUTMM100_Temporal_LOSO_Chunked, UnderPressureTemporalDataset
 from pressure.models.footformer import FootFormer
 from pressure.util.util import split_chunk_paths, recommend_cache_size
 from pressure.util.losses import PressureLoss
@@ -15,7 +15,8 @@ data_dims = {
     'BODY25_3D': (24, 4), # 3D openpose joints+ 1 conf. 
     'MOCAP': (17, 3), # 2D MOCAP joints + 1 conf.
     'MOCAP_3D': (17, 4), # 3D MOCAP joints + 1 conf.
-    'MOCAP_MRK': (39, 4) # Marker data
+    'MOCAP_MRK': (39, 4), # Marker data
+    'UNDERPRESSURE_POS': (23, 4) # UnderPressure global joint positions + synthetic confidence
 }
 insole_shapes = {
     'full_pressure': (60, 21, 2), # Output foot pressure map
@@ -32,7 +33,8 @@ def select_model(cfg):
     output_dims = {}
     
     if 'pressure' in cfg.default.mode:
-        pressure_shape = insole_shapes['active_pressure'] if cfg.data.active_only else insole_shapes['full_pressure']
+        pressure_shape = tuple(cfg.data.pressure_shape) if hasattr(cfg.data, 'pressure_shape') else \
+            insole_shapes['active_pressure'] if cfg.data.active_only else insole_shapes['full_pressure']
         output_shapes['pressure'] = pressure_shape
         output_dims['pressure'] = np.prod(pressure_shape)
         
@@ -87,7 +89,7 @@ def select_train_support(cfg, model, dataset_size=None):
         scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=cfg.training.decay)
     elif cfg.training.scheduler == 'cosine_warmup':
         # Calculate total steps
-        total_steps = cfg.training.epochs * (dataset_size // cfg.training.batch_size)
+        total_steps = cfg.training.epochs * max(1, dataset_size // cfg.training.batch_size)
         scheduler = get_cosine_schedule_with_warmup(
             optimizer,
             num_warmup_steps=cfg.training.warmup_steps,
@@ -98,6 +100,9 @@ def select_train_support(cfg, model, dataset_size=None):
 
 def ensure_consistent_data(cfg):
     """Ensure data configuration is consistent."""
+    if getattr(cfg.data, 'dataset', 'psu').lower() == 'underpressure':
+        return
+
     with open(f'{cfg.default.data_path}/args.json', 'r') as f:
         data_args = json.load(f)
 
@@ -121,6 +126,35 @@ def ensure_consistent_data(cfg):
                 raise ValueError('Cannot use both subject-wise max normalization and dataset-wide normalization')
     
 def create_dataset(cfg, subject, transform=ToTensor(), om_idx=None):
+    if getattr(cfg.data, 'dataset', 'psu').lower() == 'underpressure':
+        if cfg.default.loso:
+            raise NotImplementedError("UnderPressure baseline uses the official train/test subject split, not LOSO.")
+        train_dataset = UnderPressureTemporalDataset(
+            cfg.default.data_path,
+            split='train',
+            cfg=cfg,
+            sequence_length=cfg.data.sequence_length,
+            train_val_split=cfg.training.train_val_split,
+            shuffle=cfg.data.shuffle_data,
+        )
+        val_dataset = UnderPressureTemporalDataset(
+            cfg.default.data_path,
+            split='val',
+            cfg=cfg,
+            sequence_length=cfg.data.sequence_length,
+            train_val_split=cfg.training.train_val_split,
+            shuffle=False,
+        )
+        test_dataset = UnderPressureTemporalDataset(
+            cfg.default.data_path,
+            split='test',
+            cfg=cfg,
+            sequence_length=cfg.data.sequence_length,
+            train_val_split=cfg.training.train_val_split,
+            shuffle=False,
+        )
+        return train_dataset, val_dataset, test_dataset
+
     if cfg.data.chunk_data:
         loso = cfg.default.loso
         chunk_dir = cfg.default.data_path
