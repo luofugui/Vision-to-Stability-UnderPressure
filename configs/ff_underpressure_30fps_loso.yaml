@@ -1,6 +1,6 @@
 data:
   dataset: underpressure
-  underpressure_repo_path: UnderPressure
+  underpressure_repo_path: /media/volume/Jeff/project/footformer_workspace/UnderPressure
   data_type: UNDERPRESSURE_POS
   pressure_shape:
   - 2
@@ -46,7 +46,7 @@ data:
 
 default:
   checkpoint_path: checkpoints
-  data_path: UnderPressure/dataset
+  data_path: /media/volume/Jeff/project/footformer_workspace/UnderPressure/dataset
   loso: true
   device: cuda
   log_interval: 50
