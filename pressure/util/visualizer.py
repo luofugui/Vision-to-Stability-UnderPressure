@@ -13,7 +13,15 @@ import cv2
 import shutil
 
 from pressure.data.data_support import PressureMapProcessor, ContactMapConfig, mirror_contact_regions
-from pressure.util.video import *
+try:
+    from pressure.util.video import *
+except ModuleNotFoundError:
+    class VideoCreator:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def create_video_from_frames(self, *args, **kwargs):
+            raise RuntimeError("Video support is unavailable because pressure.util.video is missing.")
 
 ### Utility functions for visualization ###
 def get_bgr_colors_from_colormap(num_colors, colormap_name='hsv'):
