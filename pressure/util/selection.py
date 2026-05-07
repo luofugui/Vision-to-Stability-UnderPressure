@@ -130,7 +130,12 @@ def ensure_consistent_data(cfg):
 def create_dataset(cfg, subject, transform=ToTensor(), om_idx=None):
     if getattr(cfg.data, 'dataset', 'psu').lower() == 'underpressure':
         if cfg.default.loso:
-            raise NotImplementedError("UnderPressure baseline uses the official train/test subject split, not LOSO.")
+            if subject is None:
+                raise ValueError("UnderPressure LOSO requires a subject id.")
+            test_subjects = [f"S{int(subject)}"]
+        else:
+            test_subjects = list(getattr(cfg.data, 'test_subjects', ['S8', 'S9', 'S10']))
+
         train_dataset = UnderPressureTemporalDataset(
             cfg.default.data_path,
             split='train',
@@ -138,6 +143,7 @@ def create_dataset(cfg, subject, transform=ToTensor(), om_idx=None):
             sequence_length=cfg.data.sequence_length,
             train_val_split=cfg.training.train_val_split,
             shuffle=cfg.data.shuffle_data,
+            test_subjects=test_subjects,
         )
         val_dataset = UnderPressureTemporalDataset(
             cfg.default.data_path,
@@ -146,6 +152,7 @@ def create_dataset(cfg, subject, transform=ToTensor(), om_idx=None):
             sequence_length=cfg.data.sequence_length,
             train_val_split=cfg.training.train_val_split,
             shuffle=False,
+            test_subjects=test_subjects,
         )
         test_dataset = UnderPressureTemporalDataset(
             cfg.default.data_path,
@@ -154,6 +161,7 @@ def create_dataset(cfg, subject, transform=ToTensor(), om_idx=None):
             sequence_length=cfg.data.sequence_length,
             train_val_split=cfg.training.train_val_split,
             shuffle=False,
+            test_subjects=test_subjects,
         )
         return train_dataset, val_dataset, test_dataset
 

@@ -25,7 +25,7 @@ class UnderPressureTemporalDataset(Dataset):
     """
     def __init__(self, root_dir, split='train', cfg=None, sequence_length=9,
                  train_val_split=0.9, shuffle=True, transform=None,
-                 max_cached_sequences=8):
+                 max_cached_sequences=8, test_subjects=None):
         self.root_dir = Path(root_dir)
         self.split = split
         self.cfg = cfg
@@ -48,6 +48,7 @@ class UnderPressureTemporalDataset(Dataset):
         self.normalize_pose = bool(getattr(data_cfg, 'normalize_pose', True))
         self.normalize_force_by_weight = bool(getattr(data_cfg, 'normalize_force_by_weight', False))
 
+        self.test_subjects = set(test_subjects) if test_subjects is not None else None
         self.files = self._select_files(train_val_split)
         if not self.files:
             raise FileNotFoundError(
@@ -88,7 +89,7 @@ class UnderPressureTemporalDataset(Dataset):
             selected = set(splits[self.split])
             return [p for p in all_files if p.name in selected or p.as_posix() in selected]
 
-        test_subjects = set(getattr(self.cfg.data, 'test_subjects', ['S8', 'S9', 'S10']))
+        test_subjects = self.test_subjects or set(getattr(self.cfg.data, 'test_subjects', ['S8', 'S9', 'S10']))
         train_val = [p for p in all_files if self._subject_id(p) not in test_subjects]
         test = [p for p in all_files if self._subject_id(p) in test_subjects]
 
