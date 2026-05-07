@@ -47,6 +47,7 @@ class UnderPressureTemporalDataset(Dataset):
         self.add_confidence = bool(getattr(data_cfg, 'add_confidence', True))
         self.normalize_pose = bool(getattr(data_cfg, 'normalize_pose', True))
         self.normalize_force_by_weight = bool(getattr(data_cfg, 'normalize_force_by_weight', False))
+        self.preload_to_shared_memory = bool(getattr(data_cfg, 'preload_to_shared_memory', True))
 
         self.test_subjects = set(test_subjects) if test_subjects is not None else None
         self.files = self._select_files(train_val_split)
@@ -55,7 +56,12 @@ class UnderPressureTemporalDataset(Dataset):
                 f"No UnderPressure sequence files found for split='{split}' under {self.root_dir}"
             )
 
-        self.sequence_lengths = [self._sequence_length(path) for path in self.files]
+        self.preloaded_sequences = None
+        if self.preload_to_shared_memory:
+            self.preloaded_sequences = self._preload_sequences()
+            self.sequence_lengths = [len(seq['joint']) for seq in self.preloaded_sequences]
+        else:
+            self.sequence_lengths = [self._sequence_length(path) for path in self.files]
         self.index = self._build_index()
         if self.shuffle:
             random.shuffle(self.index)
@@ -130,6 +136,23 @@ class UnderPressureTemporalDataset(Dataset):
             return len(item[self.target_key])
         raise KeyError(f"Could not infer sequence length from {path}")
 
+    def _preload_sequences(self):
+        print(
+            f"\nLoading {len(self.files)} UnderPressure {self.split} sequences "
+            "into shared memory..."
+        )
+        sequences = []
+        for seq_idx, path in enumerate(self.files):
+            raw = self._load_file(path)
+            sequence = self._prepare_sequence(raw, path)
+            for key, value in sequence.items():
+                sequence[key] = value.contiguous().share_memory_()
+            sequences.append(sequence)
+            if (seq_idx + 1) % 25 == 0 or seq_idx + 1 == len(self.files):
+                print(f"  Loaded {seq_idx + 1}/{len(self.files)} sequences")
+        print("Shared memory preload complete.\n")
+        return sequences
+
     def _build_index(self):
         half = (self.sequence_length - 1) // 2
         radius = int(np.ceil(half * self.input_stride))
@@ -145,6 +168,9 @@ class UnderPressureTemporalDataset(Dataset):
         return index
 
     def _load_sequence(self, seq_idx):
+        if self.preloaded_sequences is not None:
+            return self.preloaded_sequences[seq_idx]
+
         if seq_idx in self.sequence_cache:
             self.sequence_cache.move_to_end(seq_idx)
             return self.sequence_cache[seq_idx]

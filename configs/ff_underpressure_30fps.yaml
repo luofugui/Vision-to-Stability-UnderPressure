@@ -15,6 +15,7 @@ data:
   add_confidence: true
   normalize_pose: true
   normalize_force_by_weight: false
+  preload_to_shared_memory: true
   pad_edges: true
   test_subjects:
   - S8
