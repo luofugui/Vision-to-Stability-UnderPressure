@@ -105,7 +105,7 @@ class UnderPressureTemporalDataset(Dataset):
     def _load_file(self, path):
         suffix = path.suffix.lower()
         if suffix in {'.pth', '.pt'}:
-            return torch.load(path, map_location='cpu')
+            return torch.load(path, map_location='cpu', weights_only=False)
         if suffix in {'.pkl', '.pickle'}:
             with open(path, 'rb') as f:
                 return pickle.load(f)
