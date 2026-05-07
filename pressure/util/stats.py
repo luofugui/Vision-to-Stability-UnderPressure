@@ -3,6 +3,12 @@ from collections import defaultdict
 from skimage.metrics import peak_signal_noise_ratio, structural_similarity
 from pressure.util.util import cast_array
 
+
+def _metric_mean(value):
+    if isinstance(value, (list, tuple, np.ndarray)):
+        return float(value[0])
+    return float(value)
+
 def l2_error(predictions, targets, frame_mask, gt_com=False, metric='mean'):
     """
     Compute Euclidean error for CoM predictions.
@@ -167,8 +173,7 @@ def collect_metrics(metrics_list):
     if pressure_metrics:
         mean_metrics['pressure'] = {}
         for k, vals in pressure_metrics.items():
-            means = [v[0] for v in vals]
-            stds  = [v[1] for v in vals]
+            means = [_metric_mean(v) for v in vals]
             mean_metrics['pressure'][k.replace('pressure_', '')] = [
                 float(np.mean(means)), float(np.std(means))
             ]
@@ -213,7 +218,7 @@ def print_evaluation_results(metrics, logger):
         logger.info("\n\nPressure Metrics:")
         pressure_metrics = metrics['pressure']
         for metric_name, values in pressure_metrics.items():
-            logger.info(f"    {metric_name}: {round(values[0], 3)}")
+            logger.info(f"    {metric_name}: {round(_metric_mean(values), 3)}")
     
     # Handle COM metrics
     if 'com' in metrics:
