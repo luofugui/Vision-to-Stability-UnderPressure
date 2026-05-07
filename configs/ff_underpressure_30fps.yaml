@@ -5,8 +5,7 @@ data:
   - 2
   - 16
   contact_shape:
-  - 2
-  - 16
+  - 4
   pose_key: positions
   target_key: forces
   contact_key: contacts
