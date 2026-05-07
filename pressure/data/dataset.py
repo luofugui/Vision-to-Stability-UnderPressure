@@ -48,6 +48,15 @@ class UnderPressureTemporalDataset(Dataset):
         self.normalize_pose = bool(getattr(data_cfg, 'normalize_pose', True))
         self.normalize_force_by_weight = bool(getattr(data_cfg, 'normalize_force_by_weight', False))
         self.preload_to_shared_memory = bool(getattr(data_cfg, 'preload_to_shared_memory', True))
+        self.use_skeleton_augmentation = (
+            self.split == 'train'
+            and bool(getattr(data_cfg, 'use_skeleton_augmentation', False))
+        )
+        self.skeletons_basis_std = float(getattr(data_cfg, 'skeletons_basis_std', 2.0))
+        self.skeletons_offsets_std = float(getattr(data_cfg, 'skeletons_offsets_std', 0.0075))
+        self.skeletons_lengths_std = float(getattr(data_cfg, 'skeletons_lengths_std', 0.0150))
+        self.skeletons_asymmetric = bool(getattr(data_cfg, 'skeletons_asymmetric', False))
+        self.skeleton_sampler = None
 
         self.test_subjects = set(test_subjects) if test_subjects is not None else None
         self.files = self._select_files(train_val_split)
@@ -58,8 +67,13 @@ class UnderPressureTemporalDataset(Dataset):
 
         self.preloaded_sequences = None
         if self.preload_to_shared_memory:
-            self.preloaded_sequences = self._preload_sequences()
-            self.sequence_lengths = [len(seq['joint']) for seq in self.preloaded_sequences]
+            self.preloaded_sequences = (
+                self._preload_raw_sequences()
+                if self.use_skeleton_augmentation
+                else self._preload_sequences()
+            )
+            length_key = 'angles' if self.use_skeleton_augmentation else 'joint'
+            self.sequence_lengths = [len(seq[length_key]) for seq in self.preloaded_sequences]
         else:
             self.sequence_lengths = [self._sequence_length(path) for path in self.files]
         self.index = self._build_index()
@@ -153,6 +167,34 @@ class UnderPressureTemporalDataset(Dataset):
         print("Shared memory preload complete.\n")
         return sequences
 
+    def _preload_raw_sequences(self):
+        print(
+            f"\nLoading {len(self.files)} raw UnderPressure {self.split} sequences "
+            "into shared memory for skeleton augmentation..."
+        )
+        sequences = []
+        required = ('angles', 'skeleton', 'trajectory', self.target_key)
+        for seq_idx, path in enumerate(self.files):
+            raw = self._load_file(path)
+            missing = [key for key in required if key not in raw]
+            if missing:
+                raise KeyError(
+                    f"Skeleton augmentation requires {required}, but {path} is missing {missing}."
+                )
+            sequence = {
+                'angles': torch.as_tensor(raw['angles']).float().contiguous().share_memory_(),
+                'skeleton': torch.as_tensor(raw['skeleton']).float().contiguous().share_memory_(),
+                'trajectory': torch.as_tensor(raw['trajectory']).float().contiguous().share_memory_(),
+                'pressure': torch.as_tensor(raw[self.target_key]).float().contiguous().share_memory_(),
+            }
+            if self.contact_key in raw:
+                sequence['contact'] = torch.as_tensor(raw[self.contact_key]).float().contiguous().share_memory_()
+            sequences.append(sequence)
+            if (seq_idx + 1) % 25 == 0 or seq_idx + 1 == len(self.files):
+                print(f"  Loaded {seq_idx + 1}/{len(self.files)} raw sequences")
+        print("Raw shared memory preload complete.\n")
+        return sequences
+
     def _build_index(self):
         half = (self.sequence_length - 1) // 2
         radius = int(np.ceil(half * self.input_stride))
@@ -176,10 +218,27 @@ class UnderPressureTemporalDataset(Dataset):
             return self.sequence_cache[seq_idx]
 
         raw = self._load_file(self.files[seq_idx])
-        sequence = self._prepare_sequence(raw, self.files[seq_idx])
+        sequence = self._prepare_raw_sequence(raw, self.files[seq_idx]) if self.use_skeleton_augmentation else self._prepare_sequence(raw, self.files[seq_idx])
         self.sequence_cache[seq_idx] = sequence
         if len(self.sequence_cache) > self.max_cached_sequences:
             self.sequence_cache.popitem(last=False)
+        return sequence
+
+    def _prepare_raw_sequence(self, raw, path):
+        required = ('angles', 'skeleton', 'trajectory', self.target_key)
+        missing = [key for key in required if key not in raw]
+        if missing:
+            raise KeyError(
+                f"Skeleton augmentation requires {required}, but {path} is missing {missing}."
+            )
+        sequence = {
+            'angles': torch.as_tensor(raw['angles']).float(),
+            'skeleton': torch.as_tensor(raw['skeleton']).float(),
+            'trajectory': torch.as_tensor(raw['trajectory']).float(),
+            'pressure': torch.as_tensor(raw[self.target_key]).float(),
+        }
+        if self.contact_key in raw:
+            sequence['contact'] = torch.as_tensor(raw[self.contact_key]).float()
         return sequence
 
     def _prepare_sequence(self, item, path):
@@ -187,14 +246,7 @@ class UnderPressureTemporalDataset(Dataset):
         target = torch.as_tensor(item[self.target_key]).float()
         contact = torch.as_tensor(item[self.contact_key]).float() if self.contact_key in item else None
 
-        if self.normalize_pose:
-            joints = joints - joints[:, :1, :]
-            scale = joints.flatten(1).std(dim=1).median().clamp_min(1e-6)
-            joints = joints / scale
-
-        if self.add_confidence and joints.shape[-1] == 3:
-            conf = torch.ones(*joints.shape[:-1], 1, dtype=joints.dtype)
-            joints = torch.cat([joints, conf], dim=-1)
+        joints = self._postprocess_joints(joints)
 
         if self.normalize_force_by_weight and 'subject' in item:
             weight = torch.as_tensor(item['subject'].weight).float()
@@ -207,6 +259,17 @@ class UnderPressureTemporalDataset(Dataset):
         if contact is not None:
             sequence['contact'] = torch.nan_to_num(contact)
         return sequence
+
+    def _postprocess_joints(self, joints):
+        if self.normalize_pose:
+            joints = joints - joints[:, :1, :]
+            scale = joints.flatten(1).std(dim=1).median().clamp_min(1e-6)
+            joints = joints / scale
+
+        if self.add_confidence and joints.shape[-1] == 3:
+            conf = torch.ones(*joints.shape[:-1], 1, dtype=joints.dtype)
+            joints = torch.cat([joints, conf], dim=-1)
+        return joints
 
     def _extract_positions(self, item, path):
         for key in (self.pose_key, 'positions', 'joints', 'joint'):
@@ -231,6 +294,59 @@ class UnderPressureTemporalDataset(Dataset):
 
         raise KeyError(f"No pose data found in {path}")
 
+    def _underpressure_modules(self, path):
+        repo_root = self._find_underpressure_repo(path)
+        if repo_root is not None and str(repo_root) not in sys.path:
+            sys.path.insert(0, str(repo_root))
+        try:
+            import anim
+            from data import TOPOLOGY
+            return anim, TOPOLOGY
+        except Exception as exc:
+            raise RuntimeError(
+                "UnderPressure skeleton augmentation needs the official UnderPressure "
+                "repo on cfg.data.underpressure_repo_path."
+            ) from exc
+
+    def _build_skeleton_sampler(self):
+        if self.skeleton_sampler is not None:
+            return self.skeleton_sampler
+
+        repo_root = self._find_underpressure_repo(self.files[0])
+        if repo_root is not None and str(repo_root) not in sys.path:
+            sys.path.insert(0, str(repo_root))
+        try:
+            from skeletons import SkeletonSampler
+        except Exception as exc:
+            raise RuntimeError(
+                "Could not import SkeletonSampler from the official UnderPressure repo. "
+                "Set cfg.data.underpressure_repo_path to the repo that contains skeletons.py."
+            ) from exc
+
+        skeletons = []
+        for path in self.files:
+            item = self._load_file(path)
+            skeleton = torch.as_tensor(item['skeleton']).float()
+            skeleton = skeleton.reshape(-1, *skeleton.shape[-2:])
+            skeletons.append(skeleton[:1])
+        skeletons = torch.cat(skeletons, dim=0)
+        self.skeleton_sampler = SkeletonSampler(
+            self.skeletons_offsets_std,
+            self.skeletons_lengths_std,
+            self.skeletons_asymmetric,
+            skeletons,
+        )
+        return self.skeleton_sampler
+
+    def _slice_time(self, tensor, frame_indices, nframes):
+        if tensor.ndim >= 1 and tensor.shape[0] == nframes:
+            return tensor[frame_indices]
+        return tensor
+
+    def _fk_positions(self, angles, skeleton, trajectory, path):
+        anim, TOPOLOGY = self._underpressure_modules(path)
+        return anim.FK(angles, skeleton, trajectory, TOPOLOGY).float()
+
     def _find_underpressure_repo(self, path):
         configured = getattr(self.cfg.data, 'underpressure_repo_path', None)
         if configured:
@@ -246,6 +362,9 @@ class UnderPressureTemporalDataset(Dataset):
     def __getitem__(self, idx):
         seq_idx, center = self.index[idx]
         sequence = self._load_sequence(seq_idx)
+        if self.use_skeleton_augmentation:
+            return self._getitem_augmented(seq_idx, center, sequence)
+
         joints = sequence['joint']
         pressure = sequence['pressure']
 
@@ -264,6 +383,37 @@ class UnderPressureTemporalDataset(Dataset):
         }
         if 'contact' in self.cfg.default.mode and 'contact' in sequence:
             result['contact'] = sequence['contact'][target_idx].reshape(-1)
+        return result
+
+    def _getitem_augmented(self, seq_idx, center, sequence):
+        angles_all = sequence['angles']
+        pressure = sequence['pressure']
+        nframes = len(angles_all)
+
+        half = (self.sequence_length - 1) // 2
+        frame_indices = torch.as_tensor([
+            int(np.clip(round(center + offset * self.input_stride), 0, nframes - 1))
+            for offset in range(-half, half + 1)
+        ], dtype=torch.long)
+        target_idx = int(np.clip(center, 0, len(pressure) - 1))
+
+        angles = angles_all[frame_indices]
+        skeleton = self._slice_time(sequence['skeleton'], frame_indices, nframes)
+        trajectory = self._slice_time(sequence['trajectory'], frame_indices, nframes)
+        sampler = self._build_skeleton_sampler()
+        skeleton = sampler.sample_like(skeleton, std=self.skeletons_basis_std)
+
+        joints = self._fk_positions(angles, skeleton, trajectory, self.files[seq_idx])
+        joints = torch.nan_to_num(self._postprocess_joints(joints))
+        target = torch.nan_to_num(pressure[target_idx]).reshape(-1)
+
+        result = {
+            'joint': joints,
+            'middle_frame_joints': joints[half],
+            'pressure': target,
+        }
+        if 'contact' in self.cfg.default.mode and 'contact' in sequence:
+            result['contact'] = torch.nan_to_num(sequence['contact'][target_idx]).reshape(-1)
         return result
     
 

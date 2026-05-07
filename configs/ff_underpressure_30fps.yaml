@@ -16,6 +16,11 @@ data:
   normalize_pose: true
   normalize_force_by_weight: false
   preload_to_shared_memory: true
+  use_skeleton_augmentation: false
+  skeletons_basis_std: 2.0
+  skeletons_offsets_std: 0.0075
+  skeletons_lengths_std: 0.015
+  skeletons_asymmetric: false
   pad_edges: true
   test_subjects:
   - S8

@@ -11,6 +11,11 @@ from pressure.util.pipeline import Pipeline
 from pressure.util.selection import *
 from scripts.eval import eval_model
 
+def metric_scalar(value):
+    if isinstance(value, (list, tuple, np.ndarray)):
+        return float(value[0])
+    return float(value)
+
 def run_training_epoch(pipeline, manager, cfg, writer, logger,
                        data_id, train_dataset, test_dataset,
                        resume_checkpoint=None, epoch_start=0):
@@ -62,7 +67,7 @@ def run_training_epoch(pipeline, manager, cfg, writer, logger,
             global_step=global_step
         )
         for metric_type, values in metrics.get('pressure', {}).items():
-            writer.add_scalar(f'Metrics/{data_id}/{metric_type}', values[0], global_step=global_step)
+            writer.add_scalar(f'Metrics/{data_id}/{metric_type}', metric_scalar(values), global_step=global_step)
 
     return num_epochs, metrics
 
@@ -160,4 +165,4 @@ if __name__ == '__main__':
     except FileNotFoundError:
         raise FileNotFoundError(f"Config file '{args.config}' not found.")
     
-    main(cfg, args) 
+    main(cfg, args)
