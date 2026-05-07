@@ -38,6 +38,7 @@ class UnderPressureTemporalDataset(Dataset):
         data_cfg = cfg.data
         self.pose_key = getattr(data_cfg, 'pose_key', 'positions')
         self.target_key = getattr(data_cfg, 'target_key', 'forces')
+        self.contact_key = getattr(data_cfg, 'contact_key', 'contacts')
         self.source_fps = int(getattr(data_cfg, 'source_fps', 100))
         self.input_fps = int(getattr(data_cfg, 'input_fps', 30))
         self.target_fps = int(getattr(data_cfg, 'target_fps', 30))
@@ -157,6 +158,7 @@ class UnderPressureTemporalDataset(Dataset):
     def _prepare_sequence(self, item, path):
         joints = self._extract_positions(item, path).float()
         target = torch.as_tensor(item[self.target_key]).float()
+        contact = torch.as_tensor(item[self.contact_key]).float() if self.contact_key in item else None
 
         if self.normalize_pose:
             joints = joints - joints[:, :1, :]
@@ -171,10 +173,13 @@ class UnderPressureTemporalDataset(Dataset):
             weight = torch.as_tensor(item['subject'].weight).float()
             target = target / weight.clamp_min(1e-6)
 
-        return {
+        sequence = {
             'joint': torch.nan_to_num(joints),
             'pressure': torch.nan_to_num(target),
         }
+        if contact is not None:
+            sequence['contact'] = torch.nan_to_num(contact)
+        return sequence
 
     def _extract_positions(self, item, path):
         for key in (self.pose_key, 'positions', 'joints', 'joint'):
@@ -225,11 +230,14 @@ class UnderPressureTemporalDataset(Dataset):
         target_idx = int(np.clip(center, 0, len(pressure) - 1))
         joint_seq = joints[frame_indices]
         target = pressure[target_idx].reshape(-1)
-        return {
+        result = {
             'joint': joint_seq,
             'middle_frame_joints': joint_seq[half],
             'pressure': target,
         }
+        if 'contact' in self.cfg.default.mode and 'contact' in sequence:
+            result['contact'] = sequence['contact'][target_idx].reshape(-1)
+        return result
     
 
 class PSUTMM100_Temporal_LOSO_Chunked(Dataset):

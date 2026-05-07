@@ -39,7 +39,9 @@ def select_model(cfg):
         output_dims['pressure'] = np.prod(pressure_shape)
         
     if 'contact' in cfg.default.mode:
-        if not cfg.data.use_regions:
+        if hasattr(cfg.data, 'contact_shape'):
+            contact_shape = tuple(cfg.data.contact_shape)
+        elif not cfg.data.use_regions:
             contact_shape = insole_shapes['active_pressure'] if cfg.data.active_only else insole_shapes['full_pressure']
         else:
             # For regional contact, shape is num_regions * 2 (both feet)

@@ -4,8 +4,12 @@ data:
   pressure_shape:
   - 2
   - 16
+  contact_shape:
+  - 2
+  - 16
   pose_key: positions
   target_key: forces
+  contact_key: contacts
   source_fps: 100
   input_fps: 30
   target_fps: 30
@@ -41,7 +45,7 @@ default:
   device: cuda
   log_interval: 50
   log_path: log
-  mode: ['pressure']
+  mode: ['contact', 'pressure']
   om: false
   results_path: Results
   seed: 0
@@ -67,7 +71,7 @@ loss:
   final_reduction:
 
   lambda_com: 0
-  lambda_contact: 0
+  lambda_contact: 1
   lambda_pressure: 1
 
 network:
