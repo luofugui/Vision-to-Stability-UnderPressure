@@ -1,0 +1,48 @@
+data:
+  active_only: true
+  chunk_data: true
+  chunk_size: 5000
+  contact_threshold: 0.003
+  data_type: BODY25_3D
+  num_regions:
+  - 2
+  - 1
+  pressure_is_distribution: true
+  shuffle_data: true
+  subject_wise_max_norm: false
+  subject_wise_weight_norm: false
+  use_regions: true
+  view: 1
+  binary_contact: false
+
+default:
+  data_path: Chunked_PSU/BODY25_3D_50fps_distribution
+  device: cuda
+  loso: true
+  results_path: Results
+  seed: 0
+  subjects: all
+
+event:
+  fps: 50
+  window_frames: 51
+  samples_per_event: 2
+  min_event_offset: 5
+  max_event_offset: 45
+  max_cached_chunks: 8
+
+network:
+  hidden_dim: 256
+  num_layers: 2
+  dropout: 0.1
+
+training:
+  batch_size: 512
+  dataloader_workers: 8
+  decay: 0.01
+  early_stop_patience: 8
+  epochs: 50
+  lr: 0.0002
+  max_grad_norm: 1.0
+  optimizer: adamw
+  train_val_split: 0.9
