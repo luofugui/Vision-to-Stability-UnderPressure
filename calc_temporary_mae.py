@@ -11,7 +11,6 @@ import matplotlib.pyplot as plt
 
 
 def extract_signals(pkl_path):
-    """Extract ground-truth and predicted contact signals from a pkl file."""
     with open(pkl_path, "rb") as f:
         data = pickle.load(f)
 
@@ -24,25 +23,16 @@ def extract_signals(pkl_path):
             print(f"  GT contact shape:   {gt_raw.shape}")
             print(f"  Pred contact shape: {pred_raw.shape}")
 
-            gt = gt_raw
-            pred = pred_raw
+            return gt_raw, pred_raw
 
-        else:
-            print(f"Available keys in pkl: {data.keys()}")
-            raise KeyError("Cannot find contact keys in pkl.")
-        return gt, pred
+        print(f"Available keys in pkl: {data.keys()}")
+        raise KeyError("Cannot find contact keys in pkl.")
     except Exception as e:
         print(f"Error extracting signals: {e}")
         return None, None
 
 
 def get_segments(binary_signal):
-    """
-    Extract contact segments from a binary signal.
-
-    Returns half-open intervals: [(start_idx, end_idx), ...].
-    Segment length in frames is end_idx - start_idx.
-    """
     binary_signal = np.asarray(binary_signal).astype(int)
     padded = np.concatenate(([0], binary_signal, [0]))
     diff = np.diff(padded)
@@ -50,92 +40,6 @@ def get_segments(binary_signal):
     onsets = np.where(diff == 1)[0]
     offsets = np.where(diff == -1)[0]
     return list(zip(onsets, offsets))
-
-
-def segment_iou(gt_segment, pred_segment):
-    """Calculate IoU between two half-open contact segments."""
-    g_s, g_e = gt_segment
-    p_s, p_e = pred_segment
-
-    intersection = max(0, min(g_e, p_e) - max(g_s, p_s))
-    if intersection == 0:
-        return 0.0
-
-    union = (g_e - g_s) + (p_e - p_s) - intersection
-    return intersection / union if union > 0 else 0.0
-
-
-def match_segments_iou(gt_segments, pred_segments, min_iou=0.0):
-    """
-    One-to-one match GT and predicted contact segments by descending IoU.
-
-    This does not bridge gaps. Fragmented predictions stay as separate segments:
-    one fragment may match a GT segment, while the remaining fragments are counted
-    as unmatched predictions.
-    """
-    matched_pairs = []
-    unmatched_gt = set(range(len(gt_segments)))
-    unmatched_pred = set(range(len(pred_segments)))
-
-    if not gt_segments or not pred_segments:
-        return matched_pairs, sorted(unmatched_gt), sorted(unmatched_pred)
-
-    iou_records = []
-    for gt_idx, gt_segment in enumerate(gt_segments):
-        g_s, g_e = gt_segment
-        for pred_idx, pred_segment in enumerate(pred_segments):
-            p_s, p_e = pred_segment
-
-            if p_e <= g_s:
-                continue
-            if p_s >= g_e:
-                break
-
-            iou = segment_iou(gt_segment, pred_segment)
-            if iou > min_iou:
-                iou_records.append((iou, gt_idx, pred_idx))
-
-    iou_records.sort(key=lambda x: x[0], reverse=True)
-
-    for iou, gt_idx, pred_idx in iou_records:
-        if gt_idx in unmatched_gt and pred_idx in unmatched_pred:
-            matched_pairs.append((gt_idx, pred_idx, iou))
-            unmatched_gt.remove(gt_idx)
-            unmatched_pred.remove(pred_idx)
-
-    return matched_pairs, sorted(unmatched_gt), sorted(unmatched_pred)
-
-
-def calculate_contact_time_errors(
-    gt_segments,
-    pred_segments,
-    matched_pairs,
-    unmatched_gt,
-    unmatched_pred,
-    ms_per_frame,
-):
-    matched_errors_ms = []
-    missed_gt_errors_ms = []
-    false_pred_errors_ms = []
-
-    for match in matched_pairs:
-        gt_idx, pred_idx = match[:2]
-        g_s, g_e = gt_segments[gt_idx]
-        p_s, p_e = pred_segments[pred_idx]
-
-        gt_duration = g_e - g_s
-        pred_duration = p_e - p_s
-        matched_errors_ms.append(abs(pred_duration - gt_duration) * ms_per_frame)
-
-    for gt_idx in unmatched_gt:
-        g_s, g_e = gt_segments[gt_idx]
-        missed_gt_errors_ms.append((g_e - g_s) * ms_per_frame)
-
-    for pred_idx in unmatched_pred:
-        p_s, p_e = pred_segments[pred_idx]
-        false_pred_errors_ms.append((p_e - p_s) * ms_per_frame)
-
-    return matched_errors_ms, missed_gt_errors_ms, false_pred_errors_ms
 
 
 def overlap_length(a, b):
@@ -165,8 +69,17 @@ def subtract_intervals(interval, blockers):
     return pieces
 
 
-def evaluate_one_contact_channel(gt_probs, pred_probs, fps=50, threshold=0.5, min_iou=0.0):
-    """Coverage-based contact-time MAE for one continuous contact channel."""
+def evaluate_one_contact_channel(gt_probs, pred_probs, fps=50, threshold=0.5):
+    """
+    Segment-level contact-time MAE.
+
+    Matched error includes:
+      1. GT duration not covered by any overlapping prediction
+      2. prediction duration outside the matched GT segment boundary
+
+    False prediction error only includes predicted segments that do not overlap
+    any GT segment at all.
+    """
     ms_per_frame = 1000.0 / fps
 
     gt_binary = (np.asarray(gt_probs) >= 0.5).astype(int)
@@ -175,38 +88,46 @@ def evaluate_one_contact_channel(gt_probs, pred_probs, fps=50, threshold=0.5, mi
     gt_segments = get_segments(gt_binary)
     pred_segments = get_segments(pred_binary)
 
-    covered_gt_errors_ms = []
+    matched_errors_ms = []
     missed_gt_errors_ms = []
-
-    for gt_seg in gt_segments:
-        gt_duration = gt_seg[1] - gt_seg[0]
-
-        pred_overlap_duration = sum(
-            overlap_length(gt_seg, pred_seg)
-            for pred_seg in pred_segments
-        )
-
-        error_ms = abs(gt_duration - pred_overlap_duration) * ms_per_frame
-
-        if pred_overlap_duration > 0:
-            covered_gt_errors_ms.append(error_ms)
-        else:
-            missed_gt_errors_ms.append(error_ms)
-
     false_pred_errors_ms = []
 
-    for pred_seg in pred_segments:
-        overlapping_gt_segments = [
-            gt_seg for gt_seg in gt_segments
-            if overlap_length(pred_seg, gt_seg) > 0
-        ]
+    matched_pred_indices = set()
 
-        outside_pieces = subtract_intervals(pred_seg, overlapping_gt_segments)
+    for gt_seg in gt_segments:
+        g_s, g_e = gt_seg
+        gt_duration = g_e - g_s
 
-        for piece_s, piece_e in outside_pieces:
-            false_pred_errors_ms.append((piece_e - piece_s) * ms_per_frame)
+        overlapping = []
+        for pred_idx, pred_seg in enumerate(pred_segments):
+            overlap = overlap_length(gt_seg, pred_seg)
+            if overlap > 0:
+                overlapping.append((pred_idx, pred_seg, overlap))
+                matched_pred_indices.add(pred_idx)
 
-    errors_ms = covered_gt_errors_ms + missed_gt_errors_ms + false_pred_errors_ms
+        if not overlapping:
+            missed_gt_errors_ms.append(gt_duration * ms_per_frame)
+            continue
+
+        pred_overlap_duration = sum(item[2] for item in overlapping)
+        missing_inside_gt = max(0, gt_duration - pred_overlap_duration)
+
+        outside_pred_duration = 0
+        for _, pred_seg, _ in overlapping:
+            outside_pieces = subtract_intervals(pred_seg, [gt_seg])
+            outside_pred_duration += sum(
+                piece_e - piece_s for piece_s, piece_e in outside_pieces
+            )
+
+        error_ms = (missing_inside_gt + outside_pred_duration) * ms_per_frame
+        matched_errors_ms.append(error_ms)
+
+    for pred_idx, pred_seg in enumerate(pred_segments):
+        if pred_idx not in matched_pred_indices:
+            p_s, p_e = pred_seg
+            false_pred_errors_ms.append((p_e - p_s) * ms_per_frame)
+
+    errors_ms = matched_errors_ms + missed_gt_errors_ms + false_pred_errors_ms
 
     error_count = len(errors_ms)
     total_error_ms = float(np.sum(errors_ms)) if error_count else 0.0
@@ -217,29 +138,25 @@ def evaluate_one_contact_channel(gt_probs, pred_probs, fps=50, threshold=0.5, mi
         "total_error_ms": total_error_ms,
         "error_count": error_count,
 
-        
-      
-        "matched_count": len(covered_gt_errors_ms),
+        "matched_count": len(matched_errors_ms),
         "missed_gt_count": len(missed_gt_errors_ms),
         "false_pred_count": len(false_pred_errors_ms),
 
         "total_gt_segments": len(gt_segments),
         "total_pred_segments": len(pred_segments),
 
-        
-        "matched_mae": float(np.mean(covered_gt_errors_ms)) if covered_gt_errors_ms else 0.0,
+        "matched_mae": float(np.mean(matched_errors_ms)) if matched_errors_ms else 0.0,
         "missed_gt_mae": float(np.mean(missed_gt_errors_ms)) if missed_gt_errors_ms else 0.0,
         "false_pred_mae": float(np.mean(false_pred_errors_ms)) if false_pred_errors_ms else 0.0,
     }
 
 
-
-def evaluate_temporal_performance(gt_probs, pred_probs, fps=50, threshold=0.5, min_iou=0.0):
+def evaluate_temporal_performance(gt_probs, pred_probs, fps=50, threshold=0.5):
     gt_probs = np.asarray(gt_probs)
     pred_probs = np.asarray(pred_probs)
 
     if gt_probs.ndim == 1:
-        return evaluate_one_contact_channel(gt_probs, pred_probs, fps, threshold, min_iou)
+        return evaluate_one_contact_channel(gt_probs, pred_probs, fps, threshold)
 
     if gt_probs.ndim == 2:
         channel_results = []
@@ -248,9 +165,8 @@ def evaluate_temporal_performance(gt_probs, pred_probs, fps=50, threshold=0.5, m
                 evaluate_one_contact_channel(
                     gt_probs[:, ch],
                     pred_probs[:, ch],
-                    fps,
-                    threshold,
-                    min_iou,
+                    fps=fps,
+                    threshold=threshold,
                 )
             )
 
@@ -259,6 +175,7 @@ def evaluate_temporal_performance(gt_probs, pred_probs, fps=50, threshold=0.5, m
         matched_count = sum(r["matched_count"] for r in channel_results)
         missed_gt_count = sum(r["missed_gt_count"] for r in channel_results)
         false_pred_count = sum(r["false_pred_count"] for r in channel_results)
+
         return {
             "ct_mae": total_error_ms / error_count if error_count else 0.0,
             "total_error_ms": total_error_ms,
@@ -287,6 +204,7 @@ def evaluate_temporal_performance(gt_probs, pred_probs, fps=50, threshold=0.5, m
 
     raise ValueError(f"Unsupported contact shape: {gt_probs.shape}")
 
+
 def save_summary_plots(subject_names, metrics_list, avg_metrics, fps):
     plot_names = subject_names + ["AVG"]
 
@@ -300,9 +218,9 @@ def save_summary_plots(subject_names, metrics_list, avg_metrics, fps):
 
     plt.figure(figsize=(14, 6))
     plt.bar(x - 1.5 * width, ct_mae, width, label="Contact Time MAE")
-    plt.bar(x - 0.5 * width, matched_mae, width, label="Matched Duration MAE")
+    plt.bar(x - 0.5 * width, matched_mae, width, label="Matched Boundary MAE")
     plt.bar(x + 0.5 * width, missed_gt_mae, width, label="Missed GT Avg Length")
-    plt.bar(x + 1.5 * width, false_pred_mae, width, label="False Pred Avg Length")
+    plt.bar(x + 1.5 * width, false_pred_mae, width, label="Unmatched False Pred Avg Length")
 
     plt.xticks(x, plot_names, rotation=45, ha="right")
     plt.ylabel("Milliseconds")
@@ -319,9 +237,9 @@ def save_summary_plots(subject_names, metrics_list, avg_metrics, fps):
     false_pred_count = [m["false_pred_count"] for m in metrics_list] + [avg_metrics["false_pred_count"]]
 
     plt.figure(figsize=(14, 6))
-    plt.bar(x - width, matched_count, width, label="Matched Segments")
+    plt.bar(x - width, matched_count, width, label="Matched GT Segments")
     plt.bar(x, missed_gt_count, width, label="Missed GT")
-    plt.bar(x + width, false_pred_count, width, label="False Pred")
+    plt.bar(x + width, false_pred_count, width, label="Unmatched False Pred")
 
     plt.xticks(x, plot_names, rotation=45, ha="right")
     plt.ylabel("Segment Count")
@@ -334,35 +252,13 @@ def save_summary_plots(subject_names, metrics_list, avg_metrics, fps):
     plt.close()
 
 
-
 def main():
     parser = argparse.ArgumentParser(
-        description="Calculate coverage-based contact-time MAE"
+        description="Calculate segment-level contact-time MAE"
     )
-    parser.add_argument(
-        "--fps",
-        type=int,
-        default=50,
-        help="FPS of the video/model output, e.g. 10 or 50",
-    )
-    parser.add_argument(
-        "--dir",
-        type=str,
-        default="output",
-        help="Directory containing subject*_output.pkl files",
-    )
-    parser.add_argument(
-        "--threshold",
-        type=float,
-        default=0.5,
-        help="Threshold used to binarize predicted contact probabilities",
-    )
-    parser.add_argument(
-        "--min-iou",
-        type=float,
-        default=0.0,
-        help="Minimum IoU required for a GT/predicted contact match",
-    )
+    parser.add_argument("--fps", type=int, default=50)
+    parser.add_argument("--dir", type=str, default="output")
+    parser.add_argument("--threshold", type=float, default=0.5)
     args = parser.parse_args()
 
     pkl_files = sorted(glob.glob(os.path.join(args.dir, "subject*_output.pkl")))
@@ -374,17 +270,13 @@ def main():
     metrics_list = []
     subject_names = []
     csv_lines = [
-    "Subject,Contact_Time_MAE_ms,Total_Error_ms,Error_Count,"
-    "Covered_GT_Segments,Missed_GT_FN,False_Pred_Outside_Pieces,Total_GT,Total_Pred,"
-    "Matched_Duration_MAE_ms,Missed_GT_Avg_Length_ms,False_Pred_Avg_Length_ms\n"
+        "Subject,Contact_Time_MAE_ms,Total_Error_ms,Error_Count,"
+        "Matched_GT_Segments,Missed_GT_FN,Unmatched_False_Pred,Total_GT,Total_Pred,"
+        "Matched_Boundary_MAE_ms,Missed_GT_Avg_Length_ms,Unmatched_False_Pred_Avg_Length_ms\n"
     ]
 
-
     print("\n" + "=" * 72)
-    print(
-        f"Evaluating {len(pkl_files)} subjects at {args.fps} FPS "
-        f"with segment IoU matching"
-    )
+    print(f"Evaluating {len(pkl_files)} subjects at {args.fps} FPS")
     print("=" * 72)
 
     for pkl_path in pkl_files:
@@ -402,11 +294,11 @@ def main():
             pred,
             fps=args.fps,
             threshold=args.threshold,
-            min_iou=args.min_iou,
         )
 
         metrics_list.append(res)
         subject_names.append(subj_name)
+
         csv_lines.append(
             f"{subj_name},{res['ct_mae']:.2f},{res['total_error_ms']:.2f},"
             f"{res['error_count']},{res['matched_count']},"
@@ -428,6 +320,7 @@ def main():
         key: np.mean([metrics[key] for metrics in metrics_list])
         for key in metrics_list[0].keys()
     }
+
     csv_lines.append(
         f"AVG,{avg_metrics['ct_mae']:.2f},{avg_metrics['total_error_ms']:.2f},"
         f"{avg_metrics['error_count']:.1f},{avg_metrics['matched_count']:.1f},"
@@ -440,27 +333,29 @@ def main():
     print("\n" + "=" * 60)
     print(f"OVERALL CONTACT TIME REPORT @ {args.fps} FPS")
     print("-" * 60)
-    print(f"{'Metric':<32} | {'Result':<12}")
+    print(f"{'Metric':<40} | {'Result':<12}")
     print("-" * 60)
-    print(f"{'Contact Time MAE (ms)':<32} | {avg_metrics['ct_mae']:<12.2f}")
-    print(f"{'Total Error (ms)':<32} | {avg_metrics['total_error_ms']:<12.2f}")
-    print(f"{'Error Contributions':<32} | {avg_metrics['error_count']:<12.1f}")
+    print(f"{'Contact Time MAE (ms)':<40} | {avg_metrics['ct_mae']:<12.2f}")
+    print(f"{'Total Error (ms)':<40} | {avg_metrics['total_error_ms']:<12.2f}")
+    print(f"{'Error Contributions':<40} | {avg_metrics['error_count']:<12.1f}")
     print("-" * 60)
-    print(f"{'Avg Covered GT Segments':<32} | {avg_metrics['matched_count']:<12.1f}")
-    print(f"{'Avg Missed GT Segments':<32} | {avg_metrics['missed_gt_count']:<12.1f}")
-    print(f"{'Avg False Pred Outside Pieces':<32} | {avg_metrics['false_pred_count']:<12.1f}")
-    print(f"{'Avg Total GT Segments':<32} | {avg_metrics['total_gt_segments']:<12.1f}")
-    print(f"{'Avg Total Pred Segments':<32} | {avg_metrics['total_pred_segments']:<12.1f}")
+    print(f"{'Avg Matched GT Segments':<40} | {avg_metrics['matched_count']:<12.1f}")
+    print(f"{'Avg Missed GT Segments':<40} | {avg_metrics['missed_gt_count']:<12.1f}")
+    print(f"{'Avg Unmatched False Pred Segments':<40} | {avg_metrics['false_pred_count']:<12.1f}")
+    print(f"{'Avg Total GT Segments':<40} | {avg_metrics['total_gt_segments']:<12.1f}")
+    print(f"{'Avg Total Pred Segments':<40} | {avg_metrics['total_pred_segments']:<12.1f}")
     print("=" * 60)
-    print(f"{'Matched Duration MAE (ms)':<32} | {avg_metrics['matched_mae']:<12.2f}")
-    print(f"{'Missed GT Avg Length (ms)':<32} | {avg_metrics['missed_gt_mae']:<12.2f}")
-    print(f"{'False Pred Avg Length (ms)':<32} | {avg_metrics['false_pred_mae']:<12.2f}")
+    print(f"{'Matched Boundary MAE (ms)':<40} | {avg_metrics['matched_mae']:<12.2f}")
+    print(f"{'Missed GT Avg Length (ms)':<40} | {avg_metrics['missed_gt_mae']:<12.2f}")
+    print(f"{'Unmatched False Pred Avg Length (ms)':<40} | {avg_metrics['false_pred_mae']:<12.2f}")
     print("=" * 60)
 
     save_summary_plots(subject_names, metrics_list, avg_metrics, args.fps)
+
     csv_filename = f"contact_time_mae_results_{args.fps}fps.csv"
     with open(csv_filename, "w", encoding="utf-8") as f:
         f.writelines(csv_lines)
+
     print(f"\nDetailed results saved to {csv_filename}")
 
 
